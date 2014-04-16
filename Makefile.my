@@ -1,0 +1,25 @@
+KERNELDIR = /lib/modules/`uname -r`/build
+#KERNELDIR = /lib/modules/2.6.32-358.18.1.el6.x86_64/build
+#KERNELDIR = /work/rpmbuild/BUILD/kernel-2.6.32-358.14.1.el6/linux-2.6.32-358.14.1.el6.x86_64
+obj-m = nfsd.o
+CFLAGS +=-fno-pic
+nfsd-y  := nfssvc.o nfsctl.o nfsproc.o nfsfh.o vfs.o \
+		   export.o auth.o lockd.o nfscache.o nfsxdr.o stats.o \
+           nfs3proc.o nfs3xdr.o	\
+           nfs2acl.o \
+	       nfs3acl.o \
+           nfs4proc.o nfs4xdr.o nfs4state.o nfs4idmap.o \
+		   nfs4acl.o nfs4callback.o nfs4recover.o
+
+KDIR := $(KERNELDIR)
+PWD := $(shell pwd)
+
+default:
+	$(MAKE) -C $(KDIR) SUBDIRS=$(PWD) modules
+
+clean:
+	rm -rf *.ko*
+	rm -rf *.mod.*
+	rm -rf .*.cmd
+	rm -rf *.o
+
