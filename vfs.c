@@ -1013,6 +1013,8 @@ nfsd_vfs_write(struct svc_rqst *rqstp, struct svc_fh *fhp, struct file *file,
 	int			host_err;
 	int			stable = *stablep;
 	int			use_wgather;
+    struct iovec *v = (struct iovec __user *)kmalloc(sizeof(struct iovec), GFP_KERNEL);
+    void *agg_buf = NULL; 
 
 #ifdef MSNFS
 	err = nfserr_perm;
@@ -1048,11 +1050,44 @@ nfsd_vfs_write(struct svc_rqst *rqstp, struct svc_fh *fhp, struct file *file,
 		file->f_flags |= O_SYNC;
 		spin_unlock(&file->f_lock);
 	}
+    if (agg_buf_slab){
+        agg_buf = kmem_cache_alloc(agg_buf_slab, GFP_KERNEL);
+    }
+    if (likely(agg_buf && v)){
+        int i;
+        loff_t o = 0;
+        size_t s = 0;
+        for (i = 0; i < vlen; i ++){
+            if (unlikely(!access_ok(VERIFY_READ, vec[i].iov_base,vec[i].iov_len) || 
+                         s + vec[i].iov_len > NFSSVC_MAXBLKSIZE + PAGE_SIZE ||
+                         copy_from_user(agg_buf + o, vec[i].iov_base,vec[i].iov_len))){
+                oldfs = get_fs(); set_fs(KERNEL_DS);
+                host_err = vfs_writev(file, (struct iovec __user *)vec, vlen, &offset);
+                set_fs(oldfs);
+                goto written;
+            };
+            o += vec[i].iov_len;
+            s += vec[i].iov_len;
+        }
+        /*printk("nfsd: write %ld from %d segs\n", s, vlen);*/
+        v->iov_base = agg_buf;
+        v->iov_len = s;
+        oldfs = get_fs(); set_fs(KERNEL_DS);
+        host_err = vfs_writev(file, (struct iovec __user *)v, 1, &offset);
+        set_fs(oldfs);
+    }else{
+        /* Write the data. */
+        oldfs = get_fs(); set_fs(KERNEL_DS);
+        host_err = vfs_writev(file, (struct iovec __user *)vec, vlen, &offset);
+        set_fs(oldfs);
+    }
 
-	/* Write the data. */
-	oldfs = get_fs(); set_fs(KERNEL_DS);
-	host_err = vfs_writev(file, (struct iovec __user *)vec, vlen, &offset);
-	set_fs(oldfs);
+written:
+    if (agg_buf)
+        kmem_cache_free(agg_buf_slab, agg_buf);
+    if (v)
+        kfree(v);
+
 	if (host_err < 0)
 		goto out_nfserr;
 	*cnt = host_err;

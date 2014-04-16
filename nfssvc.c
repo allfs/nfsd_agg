@@ -26,7 +26,7 @@
 extern struct svc_program	nfsd_program;
 static int			nfsd(void *vrqstp);
 struct timeval			nfssvc_boot;
-
+struct kmem_cache *agg_buf_slab = NULL;
 /*
  * nfsd_mutex protects nfsd_serv -- both the pointer itself and the members
  * of the svc_serv struct. In particular, ->sv_nrthreads but also to some
@@ -333,6 +333,11 @@ int nfsd_create_serv(void)
 	}
 	nfsd_reset_versions();
 
+	agg_buf_slab = kmem_cache_create("nfsd_write_aggregation",
+                                     NFSSVC_MAXBLKSIZE + PAGE_SIZE, 0, 0, NULL);
+	if (agg_buf_slab == NULL)
+		return -ENOMEM;
+
 	nfsd_serv = svc_create_pooled(&nfsd_program, nfsd_max_blksize,
 				      nfsd_last_thread, nfsd, THIS_MODULE);
 	if (nfsd_serv == NULL)
@@ -414,6 +419,9 @@ int nfsd_set_nrthreads(int n, int *nthreads)
 	}
 	svc_destroy(nfsd_serv);
 
+    if (agg_buf_slab)
+        kmem_cache_destroy(agg_buf_slab);
+
 	return err;
 }
 
@@ -464,7 +472,6 @@ out:
 	mutex_unlock(&nfsd_mutex);
 	return error;
 }
-
 
 /*
  * This is the NFS server kernel thread
