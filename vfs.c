@@ -917,7 +917,8 @@ nfsd_vfs_read(struct svc_rqst *rqstp, struct svc_fh *fhp, struct file *file,
 	struct inode *inode;
 	mm_segment_t	oldfs;
 	__be32		err;
-	int		host_err;
+	int		host_err = -1;
+    int read = -1;
 
 	err = nfserr_perm;
 	inode = file->f_path.dentry->d_inode;
@@ -936,10 +937,60 @@ nfsd_vfs_read(struct svc_rqst *rqstp, struct svc_fh *fhp, struct file *file,
 		rqstp->rq_resused = 1;
 		host_err = splice_direct_to_actor(file, &sd, nfsd_direct_splice_actor);
 	} else {
-		oldfs = get_fs();
-		set_fs(KERNEL_DS);
-		host_err = vfs_readv(file, (struct iovec __user *)vec, vlen, &offset);
-		set_fs(oldfs);
+        int i;
+        loff_t o = 0;
+        size_t s = 0;
+        size_t t = 0;
+
+        for (i = 0; i < vlen; i ++){
+            t += vec[i].iov_len;
+        }
+
+        if (t >= NFSSVC_MAXBLKSIZE){
+            /* don't aggregate for big read */
+            goto old_read;
+        }else{
+            struct iovec *v = (struct iovec __user *)kmalloc(sizeof(struct iovec), GFP_KERNEL);
+            void *agg_buf = NULL; 
+            if (agg_buf_slab){
+                agg_buf = kmem_cache_alloc(agg_buf_slab, GFP_KERNEL);
+            }
+        
+            if (likely(agg_buf && v)){
+                v->iov_base = agg_buf;
+                v->iov_len = t;
+                oldfs = get_fs();
+                set_fs(KERNEL_DS);
+                host_err = vfs_readv(file, (struct iovec __user *)v, 1, &offset);
+                set_fs(oldfs);
+                read = host_err;
+                if (likely(read >= 0)){
+                    for (i = 0; i < vlen; i ++){
+                        if (unlikely(!access_ok(VERIFY_WRITE, vec[i].iov_base,vec[i].iov_len) || 
+                                     s + vec[i].iov_len > NFSSVC_MAXBLKSIZE + PAGE_SIZE ||
+                                     copy_to_user(vec[i].iov_base, agg_buf + o, vec[i].iov_len))){
+                            read = -1;
+                            s = 0;
+                            break;
+                        }
+                        o += vec[i].iov_len;
+                        s += vec[i].iov_len;
+                    }
+                }
+            }
+            if (agg_buf)
+                kmem_cache_free(agg_buf_slab, agg_buf);
+            if (v)
+                kfree(v);
+        }
+    old_read:
+        if (read < 0){
+            oldfs = get_fs();
+            set_fs(KERNEL_DS);
+            host_err = vfs_readv(file, (struct iovec __user *)vec, vlen, &offset);
+            set_fs(oldfs);
+        }
+        
 	}
 
 	if (host_err >= 0) {
